@@ -1,0 +1,14 @@
+ta: Using trashbox instead of dangerous `rm'
+
+2007-2011 (C) Toshio Ito
+
+
+ta is a simple Perl script that throws away files specified as
+arguments into a "trashbox".  Since the thrown-away files are just
+moved, you can restore these files lator unlike the dangerous 'rm'
+command.
+
+- Trashbox directories can be configured per-storage-device basis.
+- ta does NOT conform to freedesktop.org trash specification.
+
+See the script itself for more information.
