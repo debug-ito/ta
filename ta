@@ -16,10 +16,7 @@ my %TRASH_DIR = (
     ## EXAMPLE of trashbox specification
     # '/dev/sda1' => $USER_HOME.'/.Trash',
     # '/dev/sda2' => '/mnt/sub/.Trash-'.$USER_NAME,
-    
-    '/dev/disk/by-uuid/da35c8be-6303-4a5b-9e1e-2179bccab737' => $USER_HOME.'/.Trash',
-    '/dev/disk/by-uuid/BEA40074A4003207' => '/mnt/data/.Trash-'. $USER_NAME,
-    '/dev/disk/by-uuid/66ca287c-0040-4ed5-931a-6ad397a577f5' => '/mnt/toons/trash',
+    # '/dev/disk/by-uuid/66ca287c-0040-4ed5-931a-6ad397a577f5' => '/mnt/hoge/trash',   ## device spec by UUID
 );
 
 # Normally, if you try to throw away files whose parent device
