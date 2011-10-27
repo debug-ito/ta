@@ -1,0 +1,320 @@
+#!/usr/bin/perl -w
+
+# Using trashbox instead of dangerous `rm'
+#
+# 2007-2009 (C) Toshio Ito
+
+my $USER_NAME = $ENV{'USERNAME'};
+my $USER_HOME = $ENV{'HOME'};
+
+# List of trash box directories for each device.
+# You must specify directories that you want to be trash boxes
+# in "device" => "directory" format.
+# You can use $USER_NAME as the current user's name and
+# $USER_HOME as the current user's home directory.
+my %TRASH_DIR = (
+    ## EXAMPLE of trashbox specification
+    # '/dev/sda1' => $USER_HOME.'/.Trash',
+    # '/dev/sda2' => '/mnt/sub/.Trash-'.$USER_NAME,
+    
+    '/dev/disk/by-uuid/da35c8be-6303-4a5b-9e1e-2179bccab737' => $USER_HOME.'/.Trash',
+    '/dev/disk/by-uuid/BEA40074A4003207' => '/mnt/data/.Trash-'. $USER_NAME,
+    '/dev/disk/by-uuid/66ca287c-0040-4ed5-931a-6ad397a577f5' => '/mnt/toons/trash',
+);
+
+# Normally, if you try to throw away files whose parent device
+# is not specified above(let's call it `orphan' in convenience),
+# the program simply ignores those files.
+# If you specify `-r' option orphans are removed and gone forever.
+
+
+# Your preferred commands to view the trashboxes.
+# These commands are specified for verbose levels.
+# %s will all be replaced by the list of the escaped trashboxes.
+my @CMD_VIEW = (
+    'ls '.&getLsColorOption().' -A -- %s',   # for verbose level 1
+    'ls '.&getLsColorOption().' -Alh -- %s'  # for verbose level 2
+);
+
+# In fact, if you specify more than 3 commands in @CMD_SHOW,
+# options -vvv , -vvvv, -vvvvv and so on can be used to
+# invoke the command of the according verbose level.
+
+# getLsColorOption() function provides the proper coloring option
+# for the shell environment.
+
+############################################################
+## Do NOT edit any part below this line
+## unless you know what you are doing.
+############################################################
+use Getopt::Long;
+use strict;
+
+Getopt::Long::Configure(qw(bundling no_ignore_case));
+
+my $VERSION = 1.01;
+my $VERSION_STR = sprintf('%.2f', $VERSION);
+
+my $USAGE = <<END;
+ta: [OPTION]... FILE...
+Throw away files and directories into trashbox.
+Version: $VERSION_STR
+Options:
+  -v ... view inside the trash boxes
+  -vv ... more detailed view of the trash boxes.
+  -i,--interactive ... interactive mode
+  -h,--help  ... show help messege
+  -r,--remove ... remove files whose trash box is not specified
+  -m,--make-trash ... make trash box directory if it does not exist
+  -D,--Destroy ... remove all the contents of the trash boxes
+END
+
+# Option flags
+my $OPT_VIEW_LEVEL = 0;
+my $OPT_HELP = 0;
+my $OPT_INTERACTIVE = 0;
+my $OPT_REMOVE_ORPHAN = 0;
+my $OPT_MAKE_TRASH = 0;
+my $OPT_DESTROY = 0;
+
+# Number of files that will be removed in one call of $CMD_RM
+# when -D option is invoked.
+my $ONETIME_REMOVE_MAX = 12;
+
+my $CMD_MV = "/bin/mv";
+my $CMD_RM = "/bin/rm";
+
+
+&main();
+
+sub checkArguments() {
+    # evaluate options
+    GetOptions(
+        "h|help" => \$OPT_HELP,
+        "i|interactive" => \$OPT_INTERACTIVE,
+        "r|remove" => \$OPT_REMOVE_ORPHAN,
+        "m|make-trash" => \$OPT_MAKE_TRASH,
+        "v+" => \$OPT_VIEW_LEVEL,
+        "D|Destroy" => \$OPT_DESTROY
+        );
+
+    if($OPT_HELP) {
+        print $USAGE . "\n";
+        exit;
+    }
+    if($OPT_VIEW_LEVEL > 0) {
+        &modeView();
+        exit;
+    }
+    if($OPT_DESTROY) {
+        &modeDestroy();
+        exit;
+    }
+    if(@ARGV == 0) {
+        print $USAGE."\n";
+        exit;
+    }
+}
+
+sub main() {
+    &reconstructTrashHash();
+    &checkArguments();
+    
+    # select file paths omitting non-existent files.
+    my @ta_path = &selectFilePathsFromArgument(@ARGV);
+    exit if @ta_path == 0;
+
+    # interactive mode
+    if($OPT_INTERACTIVE) {
+        exit if !&confirm(@ta_path);
+    }
+
+    foreach my $filepath (@ta_path) {
+        # analyze path into directories, body of file name, and extension.
+        my ($dir, $filename, $body, $ext) = &divideFilePath($filepath);
+        
+        # lines comment-outed below are to make sure whether I have done correct analysis:)
+        #print $filepath."-------\n";
+        #print "dir : $dir\n";
+        #print "bdy : $body\n";
+        #print "ext : $ext\n";
+        #print "$TRASH_DIR/$body()$ext\n";
+        #next;
+        
+        my $trashbox = &getProperTrashBox($filepath);
+        
+        if($trashbox eq '') {
+            if($OPT_REMOVE_ORPHAN) {
+                print STDERR "$filepath: this orphan is removed.\n";
+                system($CMD_RM, '-r', '--', $filepath);
+            }
+            next;
+        }
+        
+        if(! -d $trashbox) {
+            if($OPT_MAKE_TRASH) {
+                die "Cannot create trash box $trashbox\n" if ! mkdir $trashbox, 0700;
+            }else {
+                print STDERR "$trashbox: Cannot find this trash box.\n";
+                next;
+            }
+        }
+        
+        # move the file into the trash box
+        if(!lstat($trashbox."/$filename")) {
+            system($CMD_MV, "-i", '--', $filepath, $trashbox);
+            next;
+        }
+        my $number = 2;
+        while(lstat("$trashbox/$body($number)$ext")) {
+            $number++;
+        }
+        system($CMD_MV, '-i', '--', $filepath, "$trashbox/$body($number)$ext");
+    }
+}
+
+sub modeView() {
+    my $trash_list = '';
+    my $filenum = 0;
+    foreach my $box (values(%TRASH_DIR)) {
+        $trash_list .= &escapeFilePath($box)." ";
+        $filenum += int(&getFileList($box));
+    }
+    my $view_index = $OPT_VIEW_LEVEL-1;
+    if(!defined($CMD_VIEW[$view_index])) {
+        print STDERR "View command is not specified.\n";
+        return 0;
+    }
+    my $cmd = $CMD_VIEW[$view_index];
+    $cmd =~ s/%s/$trash_list/g;
+    system($cmd);
+    print "Total $filenum\n";
+}
+
+sub modeDestroy() {
+    my ($dev, $box);
+    if($OPT_INTERACTIVE) {
+        print "Remove all the files in the trash boxes?(y/n): ";
+        my $input = <STDIN>;
+        if($input !~ /[yY]/) {
+            print "Operation canceled.\n";
+            return 0;
+        }
+    }
+    
+    while(($dev, $box) = each(%TRASH_DIR)) {
+        my @filelist = &getFileList($box);
+        while(@filelist) {
+            my @remove_list = ();
+            for(my $filecount = 0 ; $filecount < $ONETIME_REMOVE_MAX && @filelist ;
+                $filecount++)
+            {
+                push(@remove_list, $box.'/'.$filelist[0]);
+                shift @filelist;
+            }
+            system($CMD_RM, '-rf', '--', @remove_list) if @remove_list > 0;
+        }
+    }
+}
+
+sub getFileList() {
+    my ($dirpath) = @_;
+    my @ret = ();
+    if(!opendir(DIRHANDLE, $dirpath)) {
+        return @ret;
+    }
+    @ret = grep(!/^\.\.|\.$/, readdir(DIRHANDLE));
+    closedir(DIRHANDLE);
+    return @ret;
+}
+
+sub reconstructTrashHash() {
+    my($dev, $box);
+    my %new_trash = ();
+    while(($dev, $box) = each(%TRASH_DIR)) {
+        my @state = stat($dev);
+        die "Internal Error: Cannot find $dev\n" if @state == 0;
+        $box =~ s/\/+$//; # remove trailing slashes
+        $new_trash{$state[6]} = $box; # state[6] stands for device id of given device file.
+    }
+    %TRASH_DIR = %new_trash;
+}
+
+sub selectFilePathsFromArgument() {
+    my @ta_path = ();
+    foreach my $filepath (@_) {
+        # goto next argument if file $filepath doesn't exist
+        if(!lstat($filepath)) {
+            print STDERR "$filepath: Cannot find file or directory\n";
+            next;
+        }
+        # remove trailing slashes. These could cause weird results especially
+        # symbolic links to directories are involved.
+        $filepath =~ s|/+$||g;
+        push(@ta_path, $filepath);
+    }
+    return @ta_path;
+}
+
+sub confirm() {
+    my(@ta_path) = @_;
+    foreach my $filepath (@ta_path) {
+        print "> ". $filepath. "\n";
+    }
+    print "------------\n";
+    print "Throw ". int(@ta_path). " file(s) away?(y/n): ";
+    my $input = <STDIN>;
+    if($input !~ /[yY]/) {
+        print "Operation canceled.\n";
+        return 0;
+    }
+    return 1;
+}
+
+sub divideFilePath() {
+    my($filepath) = @_;
+    my($directory, $filename, $body, $extension) = ('','','','');
+    
+    my @path_arr = split(/\//, $filepath);
+    $filename = $path_arr[@path_arr-1];
+    pop(@path_arr);
+    
+    $directory = join('/', @path_arr);
+    if($filename =~ /\./) {
+        $filename  =~ /^(.*?)\.(.*)$/;
+        $body = ($1) ? $1 : '';
+        $extension = ($2) ? '.'.$2 : '';
+    }else {
+        $body = $filename;
+        $extension = '';
+    }
+    return ($directory, $filename, $body, $extension);
+}
+
+sub getProperTrashBox() {
+    my($filepath) = @_;
+    my @state = lstat($filepath); # must use lstat because $filepath may be a symbolic link
+    if(@state == 0) {
+        print STDERR "$filepath: Cannot get file status.\n" if !$OPT_REMOVE_ORPHAN;
+        return "";
+    }
+    # state[0] stands for the id of the device which contains the file.
+    if(!defined($TRASH_DIR{$state[0]})) {
+        if(!$OPT_REMOVE_ORPHAN) {
+            print STDERR "$filepath: Cannot find the proper trash box.\n";
+        }
+        return "";
+    }
+    return $TRASH_DIR{$state[0]};
+}
+
+sub escapeFilePath() {
+    my($filename) = @_;
+    $filename =~ s/([\"\$\@\&\'\(\)\^\|\[\]\{\}\;\*\?\<\>\`\\ \#\!])/\\$1/g;
+    return $filename;
+}
+
+sub getLsColorOption() {
+    return "--color=auto " if defined($ENV{'LS_COLORS'});
+    return "";
+}
